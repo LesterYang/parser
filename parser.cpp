@@ -8,32 +8,25 @@
 
 // 定義 struct Buffer
 struct Buffer {
-    std::string type;       // 儲存資料類型
-    unsigned int address;   // 儲存地址
-    unsigned int size;      // 區段大小
-    char* data;             // 指向資料的動態分配區
-    unsigned int iova;        // 設備虛擬地址
-    unsigned int data_count; // 用來追蹤目前填入的數據數量
+    std::string type;
+    unsigned int address;
+    unsigned int size;
+    std::unique_ptr<char[]> data; // 使用 unique_ptr 來自動管理記憶體
+    unsigned int iova;
+    unsigned int data_count;
 
     Buffer(const std::string& t, unsigned int addr, unsigned int sz)
-        : type(strdup(t)), address(addr), size(sz), data_count(0) {
-        if  (type != "L1") {
+        : type(t), address(addr), size(sz), data_count(0) {
+        if (type == "L1") {
             data = nullptr; // L1 不分配記憶體
         } else {
-            data = new unsigned int[size / 4];    // 分配記憶體但不初始化
+            data = std::make_unique<char[]>(size); // 使用 unique_ptr 來管理動態分配的記憶體
         }
     }
 
-    ~Buffer() {
-        if (data != nullptr) {
-            delete[] data; // 只有當 data 不為 nullptr 時才釋放
-        }
-    }
-
-    // 修改 addData 方法來接受單一 char 值
     void addData(char value) { 
         if (data_count < size) { 
-            data[data_count++] = value; // 添加數據
+            data[data_count++] = value; 
         } else {
             std::cerr << "Warning: Buffer overflow when adding data to " << type << "\n";
         }
@@ -43,36 +36,31 @@ struct Buffer {
 // 定義 class Pattern 來管理不同類型的 buffer
 class Pattern {
 private:
-    std::vector<std::shared_ptr<Buffer>> code_buffers;    // 儲存 Code buffer
-    std::vector<std::shared_ptr<Buffer>> data_buffers;    // 儲存合併後的 Data buffer
-    std::vector<std::pair<unsigned int, unsigned int>> bindings; // 儲存 offset 和 address
-    Buffer* current_buffer; // 當前 buffer
-        // 存儲 Golden 和 Golden_Mask buffer 的成對列表
-    std::vector<std::pair<std::shared_ptr<Buffer>, std::shared_ptr<Buffer>>> golden_buffers; 
+    std::vector<std::shared_ptr<Buffer>> code_buffers;
+    std::vector<std::shared_ptr<Buffer>> data_buffers;
+    std::vector<std::pair<unsigned int, unsigned int>> bindings;
+    std::vector<std::pair<std::shared_ptr<Buffer>, std::shared_ptr<Buffer>>> golden_buffers;
+    Buffer* current_buffer;
 
-    // 獲取設備 TCM 地址的假設方法
     unsigned int getDeviceTcmAddress() {
-        // 返回 TCM 地址
-        return 0 /* TCM address */;
+        return 0; // 假設的 TCM 地址
     }
 
-    // 申請設備地址的方法，根據具體情況實現
     unsigned int allocateDeviceAddress(unsigned int size) {
-        // 這裡應該包含分配設備地址的邏輯
-        return 0 /* allocated address */;
+        return 0; // 假設的設備地址分配邏輯
     }
 
 public:
     Pattern() : current_buffer(nullptr) {}
 
     void addBuffer(const std::string& type, unsigned int address, unsigned int size) {
-        std::shared_ptr<Buffer> buffer = std::make_shared<Buffer>(type, address, size);
-        current_buffer = buffer.get(); // 設定當前 buffer 為新增加的 buffer
-        
+        auto buffer = std::make_shared<Buffer>(type, address, size);
+        current_buffer = buffer.get(); 
+
         if (type == "Code") {
             code_buffers.push_back(buffer);
         } else {
-            data_buffers.push_back(buffer); // 直接加入 data_buffers
+            data_buffers.push_back(buffer);
         }
         std::cout << "Added buffer: Type = " << type << ", Address = " << std::hex << address << ", Size = " << size << " bytes\n";
     }
@@ -83,7 +71,7 @@ public:
     }
 
     Buffer* getCurrentBuffer() {
-        return current_buffer; // 返回當前 buffer
+        return current_buffer;
     }
 
     void addGoldenBuffers(unsigned int address, unsigned int size) {
@@ -141,22 +129,17 @@ public:
         return nullptr; // 如果找不到則返回 nullptr
     }
 
-    void listAllBuffers() const {
-        std::cout << "Code Buffers:\n";
-        for (const auto& buf : code_buffers) {
-            std::cout << "Type: " << buf->type << ", Address: " << std::hex << buf->address << ", Size: " << buf->size << " bytes\n";
-        }
+     void listAllBuffers() const {
+        auto listBufferType = [](const std::string& label, const auto& buffers) {
+            std::cout << label << ":\n";
+            for (const auto& buf : buffers) {
+                std::cout << "Type: " << buf->type << ", Address: " << std::hex << buf->address << ", Size: " << std::dec << buf->size << " bytes\n";
+            }
+        };
 
-        std::cout << "Data Buffers:\n";
-        for (const auto& buf : data_buffers) {
-            std::cout << "Type: " << buf->type << ", Address: " << std::hex << buf->address << ", Size: " << buf->size << " bytes\n";
-        }
-
-        std::cout << "Golden Buffers:\n";
-        for (const auto& buffers : golden_buffers) {
-            std::cout << "Golden Type: " << buffers.first->type << ", Address: " << std::hex << buffers.first->address << ", Size: " << buffers.first->size << " bytes\n";
-            std::cout << "Golden Mask Type: " << buffers.second->type << ", Address: " << std::hex << buffers.second->address << ", Size: " << buffers.second->size << " bytes\n";
-        }
+        listBufferType("Code Buffers", code_buffers);
+        listBufferType("Data Buffers", data_buffers);
+        listBufferType("Golden Buffers", golden_buffers);
     }
 
     void listBindings() const {
