@@ -3,9 +3,10 @@
 #include <string>
 #include <memory>
 #include <regex>
-#include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <cstdio>
+#include <cstring>
 
 struct Buffer {
     std::string type;
@@ -89,8 +90,13 @@ public:
             std::cout << "Binding: Offset = " << binding.first << ", Address = " << std::hex << binding.second << "\n";
     }
 
-    unsigned int getDeviceTcmAddress() { return 0x1000; } // Example implementation
-    unsigned int allocateDeviceAddress(unsigned int size) { return 0x2000; } // Example implementation
+    unsigned int getDeviceTcmAddress() {
+        return 0;
+    }
+
+    unsigned int allocateDeviceAddress(unsigned int size) {
+        return 0;
+    }
 
     void allocateDeviceAddresses() {
         for (const auto& buffer : data_buffers) {
@@ -174,12 +180,7 @@ public:
     }
 
     std::vector<std::shared_ptr<Buffer>> getCodeBuffers() const {
-        std::vector<std::shared_ptr<Buffer>> codeBuffers;
-        for (const auto& buffer : data_buffers) {
-            if (buffer->type == "Code")
-                codeBuffers.push_back(buffer);
-        }
-        return codeBuffers;
+        return code_buffers;
     }
 
     void getGoldenBuffersFromOutputs() {
@@ -224,29 +225,30 @@ public:
 };
 
 void parseFile(const std::string& filename, Pattern& pattern) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
+    FILE* file = fopen(filename.c_str(), "r");
+    if (!file) {
         std::cerr << "Unable to open file: " << filename << std::endl;
         return;
     }
 
-    std::string line;
-    std::regex header_regex(R"(^// ([A-Za-z]+)@([0-9a-fA-F]+) \\{([0-9]+)\\})");
+    char line[256];
+    std::regex header_regex(R"(^// ([A-Za-z]+)@([0-9a-fA-F]+) \\\{([0-9]+)\\\})");
     std::regex binding_regex(R"(^// (\d+)@(0[xX]?[0-9a-fA-F]+)$)");
     std::regex data_regex(R"(^([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})$)");
 
-    while (std::getline(file, line)) {
+    while (fgets(line, sizeof(line), file)) {
         std::smatch match;
-        if (std::regex_match(line, match, header_regex)) {
+        std::string str_line(line);
+        if (std::regex_match(str_line, match, header_regex)) {
             std::string type = match[1];
             unsigned int address = std::stoul(match[2], nullptr, 16);
             unsigned int size = std::stoul(match[3]);
             pattern.addBuffer(type, address, size);
-        } else if (std::regex_match(line, match, binding_regex)) {
+        } else if (std::regex_match(str_line, match, binding_regex)) {
             unsigned int offset = std::stoul(match[1]);
             unsigned int address = std::stoul(match[2], nullptr, 16);
             pattern.addBinding(offset, address);
-        } else if (std::regex_match(line, match, data_regex)) {
+        } else if (std::regex_match(str_line, match, data_regex)) {
             std::vector<char> data(16);
             for (int i = 0; i < 4; ++i) {
                 unsigned int value = std::stoul(match[i + 1], nullptr, 16);
@@ -260,28 +262,31 @@ void parseFile(const std::string& filename, Pattern& pattern) {
             }
         }
     }
+
+    fclose(file);
 }
 
 void parseGoldenFile(const std::string& filename, Pattern& pattern) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
+    FILE* file = fopen(filename.c_str(), "r");
+    if (!file) {
         std::cerr << "Unable to open file: " << filename << std::endl;
         return;
     }
 
-    std::string line;
-    std::regex header_regex(R"(^// Output@([0-9a-fA-F]+) \\{([0-9]+)\\})");
+    char line[256];
+    std::regex header_regex(R"(^// Output@([0-9a-fA-F]+) \\\{([0-9]+)\\\})");
     std::regex data_regex(R"(^([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})$)");
 
     unsigned int current_address = 0;
 
-    while (std::getline(file, line)) {
+    while (fgets(line, sizeof(line), file)) {
         std::smatch match;
-        if (std::regex_match(line, match, header_regex)) {
+        std::string str_line(line);
+        if (std::regex_match(str_line, match, header_regex)) {
             current_address = std::stoul(match[1], nullptr, 16);
             unsigned int size = std::stoul(match[2]);
             pattern.addGoldenBuffers(current_address, size);
-        } else if (std::regex_match(line, match, data_regex)) {
+        } else if (std::regex_match(str_line, match, data_regex)) {
             std::vector<char> data(16);
             for (int i = 0; i < 4; ++i) {
                 unsigned int value = std::stoul(match[i + 1], nullptr, 16);
@@ -299,6 +304,8 @@ void parseGoldenFile(const std::string& filename, Pattern& pattern) {
             }
         }
     }
+
+    fclose(file);
 }
 
 int main() {
