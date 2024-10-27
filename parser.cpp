@@ -2,23 +2,21 @@
 #include <vector>
 #include <string>
 #include <memory>
-#include <cstdio>
-#include <cstring>
-#include <regex.h>
+#include <regex>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
 
 struct Buffer {
     std::string type;
     unsigned int address;
     unsigned int size;
-    std::unique_ptr<char[]> data;
+    std::vector<char> data;
     unsigned int iova;
     unsigned int data_count;
 
     Buffer(const std::string& t, unsigned int addr, unsigned int sz)
-        : type(t), address(addr), size(sz), data_count(0) {
-        if (type != "L1")
-            data = std::make_unique<char[]>(size);
-    }
+        : type(t), address(addr), size(sz), data(sz), data_count(0) {}
 
     void addData(char value) {
         if (data_count < size)
@@ -35,9 +33,6 @@ private:
     std::vector<std::pair<unsigned int, unsigned int>> bindings;
     std::vector<std::pair<std::shared_ptr<Buffer>, std::shared_ptr<Buffer>>> golden_buffers;
     Buffer* current_buffer;
-
-    unsigned int getDeviceTcmAddress() { return 0; }
-    unsigned int allocateDeviceAddress(unsigned int size) { return 0; }
 
 public:
     Pattern() : current_buffer(nullptr) {}
@@ -94,7 +89,9 @@ public:
             std::cout << "Binding: Offset = " << binding.first << ", Address = " << std::hex << binding.second << "\n";
     }
 
-    /* class Command */
+    unsigned int getDeviceTcmAddress() { return 0x1000; } // Example implementation
+    unsigned int allocateDeviceAddress(unsigned int size) { return 0x2000; } // Example implementation
+
     void allocateDeviceAddresses() {
         for (const auto& buffer : data_buffers) {
             unsigned int deviceAddress = 0;
@@ -104,35 +101,29 @@ public:
                 buffer->iova = deviceAddress;
                 std::cout << "Assigned TCM address: " << std::hex << deviceAddress 
                           << " for L1 buffer." << std::dec << std::endl;
-            } else if (buffer->type == "Temporary") {
-                deviceAddress = allocateDeviceAddress(buffer->size);
-                if (deviceAddress != 0) {
-                    buffer->iova = deviceAddress;
-                    memset(buffer->iova, 0, buffer->size);
-                    std::cout << "Allocated Temporary buffer address: " << std::hex << deviceAddress 
-                              << " and initialized to 0." << std::dec << std::endl;
-                }
-            } else if (buffer->type == "Output") {
-                deviceAddress = allocateDeviceAddress(buffer->size);
-                if (deviceAddress != 0) {
-                    buffer->iova = deviceAddress;
-                    memset(buffer->iova, 0xa5, buffer->size);
-                    std::cout << "Allocated Output buffer address: " << std::hex << deviceAddress 
-                              << " and initialized to 0xa5." << std::dec << std::endl;
-                }
             } else {
                 deviceAddress = allocateDeviceAddress(buffer->size);
                 if (deviceAddress != 0) {
                     buffer->iova = deviceAddress;
-                    memcpy((void*)buffer->iova , buffer->data, buffer->size);
-                    std::cout << "Allocated Other buffer address: " << std::hex << deviceAddress 
-                              << " and copied data." << std::dec << std::endl;
+                    if (buffer->type == "Temporary") {
+                        std::fill(buffer->data.begin(), buffer->data.end(), 0);
+                        std::cout << "Allocated Temporary buffer address: " << std::hex << deviceAddress 
+                                  << " and initialized to 0." << std::dec << std::endl;
+                    } else if (buffer->type == "Output") {
+                        std::fill(buffer->data.begin(), buffer->data.end(), 0xa5);
+                        std::cout << "Allocated Output buffer address: " << std::hex << deviceAddress 
+                                  << " and initialized to 0xa5." << std::dec << std::endl;
+                    } else {
+                        std::copy(buffer->data.begin(), buffer->data.end(), reinterpret_cast<char*>(buffer->iova));
+                        std::cout << "Allocated Other buffer address: " << std::hex << deviceAddress 
+                                  << " and copied data." << std::dec << std::endl;
+                    }
                 }
             }
         }
     }
 
-    void patchingAllCodeBuffers() {
+    int patchingAllCodeBuffers() {
         for (size_t n = 0; n < code_buffers.size(); ++n) {
             auto& codeBuffer = code_buffers[n];
 
@@ -149,23 +140,25 @@ public:
 
             for (const auto& buffer : data_buffers) {
                 unsigned int bufferEnd = buffer->address + buffer->size;
-                unsigned int diff = bindingAddress - buffer->address;
 
-                if (buffer->address <= bindingAddress && bindingAddress < bufferEnd) {
+                if (buffer->address == bindingAddress) {
                     matchedBuffer = buffer;
                     break;
                 }
 
-                if (diff < closestDiff && bindingAddress < bufferEnd) {
-                    closestDiff = diff;
-                    matchedBuffer = buffer;
+                if (bindingAddress > buffer->address && bindingAddress < bufferEnd) {
+                    unsigned int diff = bindingAddress - buffer->address;
+                    if (diff < closestDiff) {
+                        closestDiff = diff;
+                        matchedBuffer = buffer;
+                    }
                 }
             }
 
             if (!matchedBuffer) {
                 std::cerr << "No matching buffer found for binding address " << std::hex << bindingAddress << std::dec 
                         << " for Code buffer at index " << n << ". Skipping.\n";
-                continue;
+                return -1;
             }
 
             if (bindingOffset < codeBuffer->size) {
@@ -174,8 +167,10 @@ public:
                         << " with iova " << matchedBuffer->iova << std::endl;
             } else {
                 std::cerr << "Error: Offset " << bindingOffset << " is out of bounds for Code buffer at index " << n << ".\n";
+                return -1;
             }
         }
+        return 0;
     }
 
     std::vector<std::shared_ptr<Buffer>> getCodeBuffers() const {
@@ -204,129 +199,115 @@ public:
     }
 };
 
+class Command {
+public:
+    struct SubCmd {
+        unsigned int iova;
+    };
+
+    std::vector<SubCmd> subcmds;
+
+    Command(const Pattern& pattern) {
+        auto codeBuffers = pattern.getCodeBuffers();
+        for (const auto& buffer : codeBuffers) {
+            SubCmd cmd;
+            cmd.iova = buffer->iova;
+            subcmds.push_back(cmd);
+        }
+    }
+
+    void listSubCmds() const {
+        for (const auto& cmd : subcmds) {
+            std::cout << "SubCmd iova: " << std::hex << cmd.iova << std::dec << std::endl;
+        }
+    }
+};
+
 void parseFile(const std::string& filename, Pattern& pattern) {
-    FILE* file = fopen(filename.c_str(), "r");
-    if (file == nullptr) {
-        std::cerr << "無法開啟檔案: " << filename << std::endl;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Unable to open file: " << filename << std::endl;
         return;
     }
 
-    char line[256];
-    // "// Code@40001000 {32}"
-    regex_t header_regex;
-    regcomp(&header_regex, "^// ([A-Za-z]+)@([0-9a-fA-F]+) \\{([0-9]+)\\}", REG_EXTENDED);
-    // "// Binding"
-    regex_t binding_regex;
-    regcomp(&binding_regex, "^// (\\d+)@(0[xX]?[0-9a-fA-F]+)$", REG_EXTENDED);
-    // "12345678_9abcdef0_aaaaaaaa_00000000"
-    regex_t data_regex;
-    regcomp(&data_regex, "^([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})$", REG_EXTENDED);
+    std::string line;
+    std::regex header_regex(R"(^// ([A-Za-z]+)@([0-9a-fA-F]+) \\{([0-9]+)\\})");
+    std::regex binding_regex(R"(^// (\d+)@(0[xX]?[0-9a-fA-F]+)$)");
+    std::regex data_regex(R"(^([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})$)");
 
-    while (fgets(line, sizeof(line), file)) {
-        line[strcspn(line, "\n")] = 0;
-
-        if (regexec(&header_regex, line, 0, nullptr, 0) == 0) {
-            std::string type(32, '\0');
-            unsigned int address, size;
-            sscanf(line, "// %[^@]@%x {%u", &type[0], &address, &size);
+    while (std::getline(file, line)) {
+        std::smatch match;
+        if (std::regex_match(line, match, header_regex)) {
+            std::string type = match[1];
+            unsigned int address = std::stoul(match[2], nullptr, 16);
+            unsigned int size = std::stoul(match[3]);
             pattern.addBuffer(type, address, size);
-        } else if (regexec(&binding_regex, line, 0, nullptr, 0) == 0) {
-            unsigned int offset;
-            unsigned int address;
-            sscanf(line, "// %u@%x", &offset, &address);
+        } else if (std::regex_match(line, match, binding_regex)) {
+            unsigned int offset = std::stoul(match[1]);
+            unsigned int address = std::stoul(match[2], nullptr, 16);
             pattern.addBinding(offset, address);
-        }else if (regexec(&data_regex, line, 0, nullptr, 0) == 0) {
-            char data[16];
-            sscanf(line, "%02x%02x%02x%02x_%02x%02x%02x%02x_%02x%02x%02x%02x_%02x%02x%02x%02x", 
-                   &data[0], &data[1], &data[2], &data[3], 
-                   &data[4], &data[5], &data[6], &data[7], 
-                   &data[8], &data[9], &data[10], &data[11], 
-                   &data[12], &data[13], &data[14], &data[15]);
+        } else if (std::regex_match(line, match, data_regex)) {
+            std::vector<char> data(16);
+            for (int i = 0; i < 4; ++i) {
+                unsigned int value = std::stoul(match[i + 1], nullptr, 16);
+                std::memcpy(&data[i * 4], &value, 4);
+            }
 
             Buffer* current_buffer = pattern.getCurrentBuffer();
             if (current_buffer) {
-                for (int i = 0; i < sizeof(data); ++i)
-                    current_buffer->addData(data[i]);
+                for (char value : data)
+                    current_buffer->addData(value);
             }
         }
     }
-
-    regfree(&data_regex);
-    regfree(&binding_regex);
-    regfree(&header_regex);
-    fclose(file);
 }
 
-
 void parseGoldenFile(const std::string& filename, Pattern& pattern) {
-    FILE* file = fopen(filename.c_str(), "r");
-    if (file == nullptr) {
-        std::cerr << "無法開啟檔案: " << filename << std::endl;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Unable to open file: " << filename << std::endl;
         return;
     }
 
-    char line[256];
-    // "// Output@50006000 {32}"
-    regex_t header_regex;
-    regcomp(&header_regex, "^// Output@([0-9a-fA-F]+) \\{([0-9]+)\\}", REG_EXTENDED);
-    // "xxxxxxxx_xxxxdef0_aaaaaaaa_00000000"
-    regex_t data_regex;
-    regcomp(&data_regex, "^([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})$", REG_EXTENDED);
+    std::string line;
+    std::regex header_regex(R"(^// Output@([0-9a-fA-F]+) \\{([0-9]+)\\})");
+    std::regex data_regex(R"(^([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})_([0-9a-fA-F]{8})$)");
 
-    while (fgets(line, sizeof(line), file)) {
-        line[strcspn(line, "\n")] = 0;
+    unsigned int current_address = 0;
 
-        if (regexec(&header_regex, line, 0, nullptr, 0) == 0) {
-            unsigned int address, size;
-            sscanf(line, "// Output@%x {%u", &address, &size);
-            pattern.addGoldenBuffers(address, size);
-        } else if (regexec(&data_regex, line, 0, nullptr, 0) == 0) {
-    
-            char data[16];
+    while (std::getline(file, line)) {
+        std::smatch match;
+        if (std::regex_match(line, match, header_regex)) {
+            current_address = std::stoul(match[1], nullptr, 16);
+            unsigned int size = std::stoul(match[2]);
+            pattern.addGoldenBuffers(current_address, size);
+        } else if (std::regex_match(line, match, data_regex)) {
+            std::vector<char> data(16);
+            for (int i = 0; i < 4; ++i) {
+                unsigned int value = std::stoul(match[i + 1], nullptr, 16);
+                std::memcpy(&data[i * 4], &value, 4);
+            }
 
-            #if 0 // Use legacy operaions
-            sscanf(line, "%02x%02x%02x%02x_%02x%02x%02x%02x_%02x%02x%02x%02x_%02x%02x%02x%02x", 
-                   &data[0], &data[1], &data[2], &data[3], 
-                   &data[4], &data[5], &data[6], &data[7], 
-                   &data[8], &data[9], &data[10], &data[11], 
-                   &data[12], &data[13], &data[14], &data[15]);
-            #endif
-
-            auto [golden, golden_mask] = pattern.getGoldenBuffersByAddress(address);
+            auto [golden, golden_mask] = pattern.getGoldenBuffersByAddress(current_address);
             if (golden) {
-                for (int i = 0; i < 16; ++i)
-                    golden->addData(data[i]);
+                for (char value : data)
+                    golden->addData(value);
             }
             if (golden_mask) {
-                for (int i = 0; i < 16; ++i) {
-                    golden_mask->addData(data[i]);
+                for (char value : data)
+                    golden_mask->addData(value);
             }
         }
     }
-
-    regfree(&data_regex);
-    regfree(&header_regex);
-    fclose(file);
 }
 
-//-------------------------------------------------------------------------------
-// 以上為Pattern.h
-//#include "Pattern.h"
-//-------------------------------------------------------------------------------
-
 int main() {
-
-    // 1. Create pattern
     Pattern pattern;
 
-    pattern.parseFile("0.hex");
-    pattern.parseGoldenFile("cmodel_output.hex");
+    parseFile("0.hex", pattern);
+    parseGoldenFile("cmodel_output.hex", pattern);
     pattern.listAllBuffers();
 
-    // 2. Create APU command
-    //    2-1. Set APU command paremeters
- 
-    //    2-2. Prepare MDLA command
     pattern.allocateDeviceAddresses();
     pattern.patchingAllCodeBuffers();
     std::cout << "\nCode Buffers:" << std::endl;
@@ -337,13 +318,8 @@ int main() {
                   << std::endl;
     }
 
-    // 3. Run Command
-
-    // 4. Command done
-    //    4-1. Compare output data
-    //    4-2. Show result
-
-    // 5. Relese APU Command
+    Command command(pattern);
+    command.listSubCmds();
 
     return 0;
 }
