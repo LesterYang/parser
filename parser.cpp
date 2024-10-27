@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <cstdio>
 #include <cstring>
+#include <limits.h>
 
 struct Buffer {
     std::string type;
@@ -73,16 +74,20 @@ public:
     }
 
     void listAllBuffers() const {
-        auto listBufferType = [](const std::string& label, const auto& buffers) {
-            std::cout << label << ":\n";
-            for (const auto& buf : buffers) {
-                std::cout << "Type: " << buf->type << ", Address: " << std::hex << buf->address << ", Size: " << std::dec << buf->size << " bytes\n";
-            }
-        };
+        std::cout << "Code Buffers:\n";
+        for (const auto& buf : code_buffers) {
+            std::cout << "Type: " << buf->type << ", Address: " << std::hex << buf->address << ", Size: " << buf->size << " bytes\n";
+        }
 
-        listBufferType("Code Buffers", code_buffers);
-        listBufferType("Data Buffers", data_buffers);
-        listBufferType("Golden Buffers", golden_buffers);
+        std::cout << "Data Buffers:\n";
+        for (const auto& buf : data_buffers) {
+            std::cout << "Type: " << buf->type << ", Address: " << std::hex << buf->address << ", Size: " << buf->size << " bytes\n";
+        }
+
+        std::cout << "Golden Buffers:\n";
+        for (const auto& pair : golden_buffers) {
+            std::cout << "Type: " << pair.first->type << ", Address: " << std::hex << pair.first->address << ", Size: " << pair.first->size << " bytes\n";
+        }
     }
 
     void listBindings() const {
@@ -142,7 +147,7 @@ public:
             unsigned int bindingAddress = bindings[n].second;
 
             std::shared_ptr<Buffer> matchedBuffer = nullptr;
-            unsigned int closestDiff = std::numeric_limits<unsigned int>::max();
+            unsigned int closestDiff = UINT_MAX;
 
             for (const auto& buffer : data_buffers) {
                 unsigned int bufferEnd = buffer->address + buffer->size;
